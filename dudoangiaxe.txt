@@ -1,0 +1,169 @@
+import pandas as pd
+import numpy as np
+import matplotlib.pyplot as plt
+from sklearn.model_selection import train_test_split
+from sklearn.preprocessing import StandardScaler, LabelEncoder
+from sklearn.linear_model import LinearRegression
+from sklearn.ensemble import RandomForestRegressor
+from sklearn.metrics import mean_squared_error, r2_score, mean_absolute_error
+import threading
+import os
+
+class DuDoanGiaXeOtoCu:
+    def __init__(self, duong_dan_du_lieu):
+        self.duong_dan_du_lieu = duong_dan_du_lieu
+        self.du_lieu = None
+        self.dac_trung = None
+        self.bo_tieu_chuan_hoa = StandardScaler()
+        self.bo_ma_hoa_nhan = {}
+
+    def tai_du_lieu(self):
+        try:
+            self.du_lieu = pd.read_csv(self.duong_dan_du_lieu)
+
+            dac_trung_phan_loai = [
+                'brand', 'model', 'model_year', 'milage', 'fuel_type',
+                'engine', 'transmission', 'ext_col', 'int_col',
+                'accident', 'clean_title', 'price'
+            ]
+
+            dac_trung_can_ma_hoa = [
+                'brand', 'model', 'fuel_type', 'engine',
+                'transmission', 'ext_col', 'int_col'
+            ]
+
+            for dac_trung in dac_trung_can_ma_hoa:
+                if dac_trung in self.du_lieu.columns:
+                    bo_ma_hoa = LabelEncoder()
+                    self.du_lieu[dac_trung + '_encoded'] = bo_ma_hoa.fit_transform(self.du_lieu[dac_trung].astype(str))
+                    self.bo_ma_hoa_nhan[dac_trung] = bo_ma_hoa
+
+            self.du_lieu['tuoi_xe'] = 2024 - self.du_lieu['model_year']
+            self.du_lieu['km_moi_nam'] = self.du_lieu['milage'] / self.du_lieu['tuoi_xe']
+            self.du_lieu['km_moi_nam'] = self.du_lieu['km_moi_nam'].replace([np.inf, -np.inf], np.nan).fillna(0)
+
+            self.dac_trung = [
+                'model_year', 'milage', 'tuoi_xe', 'km_moi_nam',
+                'brand_encoded', 'model_encoded', 'fuel_type_encoded',
+                'engine_encoded', 'transmission_encoded', 'ext_col_encoded',
+                'int_col_encoded', 'accident', 'clean_title'
+            ]
+
+            return self.du_lieu
+
+        except FileNotFoundError:
+            print(f"Loi: Khong tim thay file tai {self.duong_dan_du_lieu}")
+            return None
+        except Exception as e:
+            print(f"Loi tai du lieu: {e}")
+            return None
+
+    def tien_xu_ly_du_lieu(self):
+        X = self.du_lieu[self.dac_trung]
+        y = self.du_lieu['price']
+
+        X_train, X_test, y_train, y_test = train_test_split(
+            X, y, test_size=0.2, random_state=42
+        )
+
+        X_train_scaled = self.bo_tieu_chuan_hoa.fit_transform(X_train)
+        X_test_scaled = self.bo_tieu_chuan_hoa.transform(X_test)
+
+        return X_train_scaled, X_test_scaled, y_train, y_test
+
+    def huan_luyen_mo_hinh(self):
+        X_train_scaled, X_test_scaled, y_train, y_test = self.tien_xu_ly_du_lieu()
+
+        mo_hinh = {}
+        luong = []
+
+        def huan_luyen(ten_mo_hinh, mo_hinh_ml, X_train, y_train, mo_hinh):
+            mo_hinh_ml.fit(X_train, y_train)
+            mo_hinh[ten_mo_hinh] = mo_hinh_ml
+
+        luong1 = threading.Thread(target=huan_luyen, args=('Hoi Quy Tuyen Tinh', LinearRegression(), X_train_scaled, y_train, mo_hinh))
+        luong.append(luong1)
+        luong2 = threading.Thread(target=huan_luyen, args=('Rung Ngau Nhien', RandomForestRegressor(n_estimators=100, random_state=42), X_train_scaled, y_train, mo_hinh))
+        luong.append(luong2)
+
+        for t in luong:
+            t.start()
+        for t in luong:
+            t.join()
+
+        return mo_hinh, X_test_scaled, y_test
+
+    def danh_gia_mo_hinh(self, mo_hinh, X_test, y_test):
+        ket_qua = {}
+        for ten, mo_hinh_ml in mo_hinh.items():
+            y_du_doan = mo_hinh_ml.predict(X_test)
+            ket_qua[ten] = {
+                'Sai so binh phuong trung binh': mean_squared_error(y_test, y_du_doan),
+                'Can bac hai cua sai so binh phuong trung binh': np.sqrt(mean_squared_error(y_test, y_du_doan)),
+                'He so xac dinh': r2_score(y_test, y_du_doan),
+                'Sai so tuyet doi trung binh': mean_absolute_error(y_test, y_du_doan)
+            }
+
+        plt.figure(figsize=(12, 5))
+        for i, (ten, mo_hinh_ml) in enumerate(mo_hinh.items(), 1):
+            plt.subplot(1, 2, i)
+            y_du_doan = mo_hinh_ml.predict(X_test)
+            plt.scatter(y_test, y_du_doan, alpha=0.5)
+            plt.plot([y_test.min(), y_test.max()],
+                     [y_test.min(), y_test.max()],
+                     'r--', lw=2)
+            plt.title(f'Du doan {ten}')
+            plt.xlabel('Gia thuc te')
+            plt.ylabel('Gia du doan')
+        plt.tight_layout()
+        plt.show()
+
+        return ket_qua
+
+    def do_quan_trong_dac_trung(self, mo_hinh):
+        try:
+            mo_hinh_rf = mo_hinh['Rung Ngau Nhien']
+            muc_do_quan_trong = mo_hinh_rf.feature_importances_
+
+            do_quan_trong = pd.DataFrame({
+                'dac_trung': self.dac_trung,
+                'muc_do_quan_trong': muc_do_quan_trong
+            })
+            do_quan_trong = do_quan_trong.sort_values('muc_do_quan_trong', ascending=False)
+
+            plt.figure(figsize=(12, 6))
+            plt.bar(do_quan_trong['dac_trung'], do_quan_trong['muc_do_quan_trong'])
+            plt.title('Muc do quan trong cua cac dac trung (Rung Ngau Nhien)')
+            plt.xticks(rotation=45, ha='right')
+            plt.xlabel('Dac trung')
+            plt.ylabel('Muc do quan trong')
+            plt.tight_layout()
+            plt.show()
+        except KeyError:
+            print("Khong tim thay mo hinh Rung Ngau Nhien trong ket qua.")
+
+def main():
+    try:
+        duong_dan_du_lieu = input("Nhap duong dan toi file du lieu: ")
+        bo_phan_tich = DuDoanGiaXeOtoCu(duong_dan_du_lieu)
+
+        du_lieu = bo_phan_tich.tai_du_lieu()
+        if du_lieu is None:
+            raise Exception("Khong the tai du lieu")
+
+        mo_hinh, X_test, y_test = bo_phan_tich.huan_luyen_mo_hinh()
+
+        ket_qua = bo_phan_tich.danh_gia_mo_hinh(mo_hinh, X_test, y_test)
+        print("\nHieu suat mo hinh:")
+        for ten_mo_hinh, chi_so in ket_qua.items():
+            print(f"\n{ten_mo_hinh}:")
+            for ten_chi_so, gia_tri in chi_so.items():
+                print(f"{ten_chi_so}: {gia_tri:.4f}")
+
+        bo_phan_tich.do_quan_trong_dac_trung(mo_hinh)
+
+    except Exception as e:
+        print(f"Loi phan tich: {e}")
+
+if __name__ == "__main__":
+    main()
